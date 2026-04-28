@@ -1,0 +1,38 @@
+export struct TagItem {
+    tag: string,
+    name: string,
+    vr: string,
+    value: string,
+    is-private: bool,
+    depth: int,
+    is-item-header: bool,
+    is-sequence: bool,
+    is-collapsed: bool,
+    source-index: int,
+}
+
+export struct FrameItem {
+    thumbnail: image,
+    label: string,
+}
+
+export enum ContentKind {
+    Other,
+    PixelData,
+    EncapsulatedPdf,
+}
+
+export enum CopyAction {
+    Value,
+    Tag,
+    Name,
+    Branch,
+}
+
+export struct FileItem {
+    path: string,
+    sop-class: string,
+    content-kind: ContentKind,
+    is-header: bool,
+}
+

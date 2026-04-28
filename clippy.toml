@@ -1,0 +1,13 @@
+msrv = "1.89.0"
+allow-unwrap-in-tests = true
+allow-print-in-tests = true
+
+disallowed-methods = [
+    { path = "dicom::object::InMemDicomObject::element", reason = "Uses heavy backtrace capturing on error, use .get() instead" },
+    { path = "dicom::object::InMemDicomObject::element_opt", reason = "Uses heavy backtrace capturing on error, use .get() instead" },
+    { path = "dicom::object::FileDicomObject::write_to_file", reason = "Copies entire object, use dicom_ciod::dicom_alt::write_to_file instead" },
+    { path = "dicom::object::FileDicomObject::write_all", reason = "Copies entire object, use dicom_ciod::dicom_alt::write_all instead" },
+    { path = "dicom::object::InMemDicomObject::write_dataset_with_ts_cs", reason = "Copies entire object, use dicom_ciod::dicom_alt::write_dataset_with_ts_cs instead" },
+    { path = "dicom::object::InMemDicomObject::write_dataset_with_ts", reason = "Copies entire object, use dicom_ciod::dicom_alt::write_dataset_with_ts instead" },
+    { path = "std::ops::Deref::deref", reason = "Use .as_ref() or .as_deref() instead" },
+]

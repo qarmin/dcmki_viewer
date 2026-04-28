@@ -1,0 +1,289 @@
+import { ListView, LineEdit, Button } from "std-widgets.slint";
+import { TagItem, CopyAction } from "../types.slint";
+
+export component RightPanel inherits Rectangle {
+    in property <[TagItem]> filtered-tags;
+    in-out property <bool> advanced-filter: false;
+    in-out property <string> search-text: "";
+
+    callback search-changed(string, bool);
+    callback tag-copy-request(CopyAction, int);
+    callback toggle-sequence(int);
+    callback collapse-all();
+    callback expand-all();
+    callback export-tags();
+    callback context-menu-opened();
+
+    public function close-context-menu() { root.menu-visible = false; }
+
+    property <bool> menu-visible: false;
+    property <int> menu-source-index: -1;
+    property <length> menu-x: 8px;
+    property <length> menu-y: 8px;
+
+    background: transparent;
+    clip: false;
+
+    VerticalLayout {
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 6px;
+
+            Text {
+                text: "DICOM Tags";
+                font-size: 19px;
+                font-weight: 700;
+                color: #c0caf5;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+
+            Button {
+                text: "💾";
+                clicked => { root.export-tags(); }
+            }
+
+            Button {
+                text: "▶▶";
+                clicked => { root.collapse-all(); }
+            }
+
+            Button {
+                text: "▼▼";
+                clicked => { root.expand-all(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+
+            LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "Search tags...";
+                font-size: 14px;
+                text <=> root.search-text;
+                edited => {
+                    root.search-changed(self.text, root.advanced-filter);
+                }
+            }
+
+            Button {
+                text: root.advanced-filter ? "Contextual" : "Simple";
+                clicked => {
+                    root.advanced-filter = !root.advanced-filter;
+                    root.search-changed(root.search-text, root.advanced-filter);
+                }
+            }
+        }
+
+        tags-list := ListView {
+            vertical-stretch: 1;
+            for tag in root.filtered-tags : Rectangle {
+                height: tag.is-item-header ? 28px : 64px;
+                background: transparent;
+
+                states [
+                    hovered when ta.has-hover : {
+                        background: #24283b;
+                    }
+                ]
+
+                ta := TouchArea {
+                    property <length> drag-start-abs-y;
+                    property <length> drag-start-viewport-y;
+
+                    clicked => {
+                        if tag.is-sequence {
+                            root.toggle-sequence(tag.source-index);
+                        }
+                    }
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                            self.drag-start-abs-y = self.absolute-position.y + self.mouse-y;
+                            self.drag-start-viewport-y = tags-list.viewport-y;
+                        }
+                        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                            root.menu-source-index = tag.source-index;
+                            root.menu-x = self.absolute-position.x - root.absolute-position.x + 10px + tag.depth * 6px;
+                            root.menu-y = self.absolute-position.y - root.absolute-position.y + 8px;
+                            root.menu-visible = true;
+                            root.context-menu-opened();
+                        }
+                    }
+                    moved => {
+                        if self.pressed {
+                            let current-abs-y = self.absolute-position.y + self.mouse-y;
+                            let delta = current-abs-y - self.drag-start-abs-y;
+                            if delta < -3px || delta > 3px {
+                                let target-y = self.drag-start-viewport-y + delta;
+                                tags-list.viewport-y = min(0px, max(tags-list.height - tags-list.viewport-height, target-y));
+                            }
+                        }
+                    }
+                }
+
+                if tag.is-item-header : HorizontalLayout {
+                    x: tag.depth * 14px;
+                    width: parent.width - tag.depth * 14px;
+                    height: parent.height;
+                    padding-left: 6px;
+
+                    Text {
+                        text: "-- " + tag.name + " --";
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: tag.depth <= 0 ? #9ece6a : (tag.depth <= 2 ? #73daca : (tag.depth <= 4 ? #bb9af7 : #7dcfff));
+                        vertical-alignment: center;
+                    }
+                }
+
+                if tag.is-sequence : HorizontalLayout {
+                    x: tag.depth * 14px;
+                    width: parent.width - tag.depth * 14px;
+                    padding-left: 4px;
+                    padding-top: 8px;
+                    spacing: 4px;
+
+                    Text {
+                        width: 16px;
+                        text: tag.is-collapsed ? "▶" : "▼";
+                        font-size: 11px;
+                        color: tag.is-private ? #e0af68 : (tag.depth <= 0 ? #7aa2f7 : (tag.depth <= 2 ? #73daca : (tag.depth <= 4 ? #bb9af7 : #7dcfff)));
+                        vertical-alignment: top;
+                    }
+
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: tag.tag + "  " + tag.name;
+                                font-size: 13px;
+                                color: tag.is-private ? #e0af68 : (tag.depth <= 0 ? #7aa2f7 : (tag.depth <= 2 ? #73daca : (tag.depth <= 4 ? #bb9af7 : #7dcfff)));
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: tag.vr;
+                                font-size: 11px;
+                                color: #414868;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Text {
+                            text: tag.value;
+                            font-size: 14px;
+                            color: #a9b1d6;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                if !tag.is-item-header && !tag.is-sequence : VerticalLayout {
+                    x: tag.depth * 14px;
+                    width: parent.width - tag.depth * 14px;
+                    padding-left: 10px;
+                    padding-top: 8px;
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: tag.tag + "  " + tag.name;
+                            font-size: 13px;
+                            color: tag.is-private ? #e0af68 : (tag.depth <= 0 ? #7aa2f7 : (tag.depth <= 2 ? #73daca : (tag.depth <= 4 ? #bb9af7 : #7dcfff)));
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: tag.vr;
+                            font-size: 11px;
+                            color: #414868;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: tag.value;
+                        font-size: 14px;
+                        color: #a9b1d6;
+                        overflow: elide;
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: parent.width;
+                    background: #2f334d;
+                }
+            }
+        }
+
+    }
+
+    if root.menu-visible : Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: #00000000;
+
+        TouchArea {
+            clicked => { root.menu-visible = false; }
+        }
+
+        Rectangle {
+            x: root.menu-x;
+            y: root.menu-y;
+            width: 200px;
+            height: 148px;
+            background: #1f2335;
+            border-color: #414868;
+            border-width: 1px;
+            border-radius: 6px;
+
+            VerticalLayout {
+                padding: 6px;
+                spacing: 4px;
+
+                Button {
+                    text: "Copy value";
+                    clicked => {
+                        root.tag-copy-request(CopyAction.Value, root.menu-source-index);
+                        root.menu-visible = false;
+                    }
+                }
+
+                Button {
+                    text: "Copy tag";
+                    clicked => {
+                        root.tag-copy-request(CopyAction.Tag, root.menu-source-index);
+                        root.menu-visible = false;
+                    }
+                }
+
+                Button {
+                    text: "Copy name";
+                    clicked => {
+                        root.tag-copy-request(CopyAction.Name, root.menu-source-index);
+                        root.menu-visible = false;
+                    }
+                }
+
+                Button {
+                    text: "Copy branch";
+                    clicked => {
+                        root.tag-copy-request(CopyAction.Branch, root.menu-source-index);
+                        root.menu-visible = false;
+                    }
+                }
+            }
+        }
+    }
+}

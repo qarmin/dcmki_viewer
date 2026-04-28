@@ -1,0 +1,440 @@
+import { ListView } from "std-widgets.slint";
+import { LeftPanel } from "components/left_panel.slint";
+import { RightPanel } from "components/right_panel.slint";
+import { TagItem, FrameItem, FileItem, CopyAction } from "types.slint";
+export { TagItem, FrameItem, FileItem, CopyAction } from "types.slint";
+
+export component MainWindow inherits Window {
+    title: "DICOM Viewer";
+    background: #1a1b26;
+
+    //  Data properties
+    in property <image> current-image;
+    in property <[FrameItem]> frames;
+    in property <[TagItem]> filtered-tags;
+    in property <int> frame-count: 0;
+    in-out property <int> current-frame-index: 0;
+
+    in property <string> current-file-name: "";
+    in property <string> current-file-path: "";
+    in property <string> current-sop-class: "";
+    in property <string> image-size-info: "";
+
+    in property <bool> dir-mode: false;
+    in property <string> dir-path: "";
+    in property <[FileItem]> dir-files;
+
+    in-out property <bool> advanced-filter: false;
+    in-out property <bool> only-visible: true;
+
+    in property <bool> loading: false;
+    in property <int> loading-current: 0;
+    in property <int> loading-total: 0;
+
+    // Reset to "" whenever a new file is loaded (from Rust side)
+    in-out property <string> tag-search-text: "";
+
+    //  Callbacks
+    callback frame-selected(int);
+    callback search-changed(string, bool);
+    callback file-selected(string);
+    callback open-file-dialog();
+    callback open-folder-dialog();
+    callback tag-copy-request(CopyAction, int);
+    callback toggle-sequence(int);
+    callback collapse-all();
+    callback expand-all();
+    callback export-tags();
+    callback save-current-frame();
+    callback save-all-frames();
+    callback filter-dir-files(string, bool, bool);
+
+    //  Panel visibility / size
+    property <bool> show-file-panel: false;
+    property <bool> show-tags: true;
+    property <length> file-panel-w: 280px;
+    property <length> tags-panel-w: 420px;
+
+    // File list filter text (kept here so it can survive panel hide/show)
+    property <string> file-filter-text: "";
+
+    //  Layout constants
+    property <length> pad: 8px;
+    property <length> hnd: 6px;    // resize handle thickness
+    property <length> gap: 4px;    // gap on each side of a handle
+
+    //  Derived layout values
+    // Is the file-list panel actually visible?
+    property <bool> fp-vis: root.show-file-panel && root.dir-mode;
+
+    // Total width occupied by the left section (file panel + gaps + handle)
+    property <length> left-total: root.fp-vis
+        ? (root.file-panel-w + root.gap + root.hnd + root.gap)
+        : 0px;
+
+    // Total width occupied by the right section (gaps + handle + tags panel)
+    property <length> right-total: root.show-tags
+        ? (root.gap + root.hnd + root.gap + root.tags-panel-w)
+        : 0px;
+
+    // Center panel geometry
+    property <length> cx: root.pad + root.left-total;
+    property <length> cw: root.width - root.cx - root.right-total - root.pad;
+    property <length> ph: root.height - 2 * root.pad;   // panels height
+
+    //  Drag state
+    property <length> lh-drag-abs: 0px;
+    property <length> lh-drag-w:   0px;
+    property <length> rh-drag-abs: 0px;
+    property <length> rh-drag-w:   0px;
+
+    forward-focus: key-scope;
+
+    key-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape && root.fp-vis {
+                root.show-file-panel = false;
+                return accept;
+            }
+            if event.text == Key.LeftArrow {
+                if root.current-frame-index > 0 {
+                    root.current-frame-index = root.current-frame-index - 1;
+                    root.frame-selected(root.current-frame-index);
+                }
+                return accept;
+            }
+            if event.text == Key.RightArrow {
+                if root.current-frame-index < root.frame-count - 1 {
+                    root.current-frame-index = root.current-frame-index + 1;
+                    root.frame-selected(root.current-frame-index);
+                }
+                return accept;
+            }
+            reject
+        }
+
+        //
+        // LEFT: File list panel
+        //
+        Rectangle {
+            x: root.pad;
+            y: root.pad;
+            width: root.fp-vis ? root.file-panel-w : 0px;
+            height: root.ph;
+            visible: root.fp-vis;
+            background: #1e2030;
+            border-radius: 8px;
+            clip: true;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+
+                // Directory path
+                Text {
+                    height: 18px;
+                    text: root.dir-path;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #7aa2f7;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                // Filter input
+                Rectangle {
+                    height: 30px;
+                    background: #24283b;
+                    border-radius: 6px;
+                    border-color: #414868;
+                    border-width: 1px;
+
+                    fp-input := TextInput {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        font-size: 12px;
+                        color: #c0caf5;
+                        vertical-alignment: center;
+                        single-line: true;
+                        text <=> root.file-filter-text;
+                        edited => {
+                            root.filter-dir-files(self.text, true, root.only-visible);
+                        }
+                    }
+                    if root.file-filter-text == "" : Text {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        text: "Filter files...";
+                        font-size: 12px;
+                        color: #565f89;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Only-visible toggle
+                Rectangle {
+                    height: 26px;
+                    background: vis-ta.has-hover ? #414868 : #2f334d;
+                    border-radius: 6px;
+                    vis-ta := TouchArea {
+                        clicked => {
+                            root.only-visible = !root.only-visible;
+                            root.filter-dir-files(root.file-filter-text, true, root.only-visible);
+                        }
+                    }
+                    Text {
+                        text: root.only-visible ? "Hide empty" : "Show all";
+                        font-size: 11px;
+                        color: #7aa2f7;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+
+                // File list
+                ListView {
+                    vertical-stretch: 1;
+
+                    for item in root.dir-files : Rectangle {
+                        property <bool> is-selected: !item.is-header && item.path == root.current-file-path;
+
+                        height: item.is-header ? 26px : 36px;
+                        background: item.is-header
+                            ? #2f334d
+                            : (is-selected
+                                ? #1e3a5f
+                                : (fp-row-ta.has-hover ? #24283b : transparent));
+                        border-radius: 4px;
+
+                        // Left accent bar for selected item
+                        if is-selected : Rectangle {
+                            x: 0px; y: 5px;
+                            width: 3px;
+                            height: parent.height - 10px;
+                            background: #7aa2f7;
+                            border-radius: 2px;
+                        }
+
+                        fp-row-ta := TouchArea {
+                            enabled: !item.is-header && !is-selected;
+                            mouse-cursor: is-selected ? default : pointer;
+                            clicked => {
+                                root.file-selected(item.path);
+                            }
+                        }
+
+                        if item.is-header : Text {
+                            x: 6px;
+                            width: parent.width - 12px;
+                            height: parent.height;
+                            text: item.sop-class;
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: #7aa2f7;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        if !item.is-header : Text {
+                            x: 16px;
+                            width: parent.width - 20px;
+                            height: parent.height;
+                            text: item.path;
+                            font-size: 11px;
+                            color: is-selected ? #c0caf5 : #a9b1d6;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                // Currently viewed file indicator
+                Text {
+                    height: 20px;
+                    text: root.current-file-name != "" ? root.current-file-name : "—";
+                    font-size: 10px;
+                    color: #565f89;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        //
+        // LEFT DRAG HANDLE
+        //
+        Rectangle {
+            x: root.pad + (root.fp-vis ? root.file-panel-w + root.gap : 0px);
+            y: root.pad;
+            width: root.fp-vis ? root.hnd : 0px;
+            height: root.ph;
+            visible: root.fp-vis;
+            background: lh-ta.has-hover || lh-ta.pressed ? #7aa2f7 : #2f334d;
+            border-radius: 3px;
+
+            lh-ta := TouchArea {
+                // Wider grab area
+                x: -4px;
+                width: parent.width + 8px;
+                height: parent.height;
+                mouse-cursor: col-resize;
+                pointer-event(e) => {
+                    if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                        root.lh-drag-abs = self.absolute-position.x + self.mouse-x;
+                        root.lh-drag-w   = root.file-panel-w;
+                    }
+                }
+                moved => {
+                    if self.pressed {
+                        let cur   = self.absolute-position.x + self.mouse-x;
+                        let delta = cur - root.lh-drag-abs;
+                        // Keep center panel >= 200 px
+                        let max-fp = root.width - root.pad - root.right-total
+                                     - root.gap - root.hnd - root.gap
+                                     - 200px - root.pad;
+                        root.file-panel-w = max(150px, min(max-fp, root.lh-drag-w + delta));
+                    }
+                }
+            }
+        }
+
+        //
+        // CENTER: Image viewer panel
+        //
+        left-panel := LeftPanel {
+            x: root.cx;
+            y: root.pad;
+            width: root.cw;
+            height: root.ph;
+
+            current-image: root.current-image;
+            frames: root.frames;
+            frame-count: root.frame-count;
+            current-frame-index <=> root.current-frame-index;
+            current-file-name: root.current-file-name;
+            current-sop-class: root.current-sop-class;
+            image-size-info: root.image-size-info;
+
+            dir-mode: root.dir-mode;
+            show-file-panel: root.show-file-panel;
+            show-tags: root.show-tags;
+
+            frame-selected(i)      => { root.frame-selected(i); }
+            open-file-dialog       => { root.open-file-dialog(); }
+            open-folder-dialog     => { root.open-folder-dialog(); }
+            save-current-frame     => { root.save-current-frame(); }
+            save-all-frames        => { root.save-all-frames(); }
+            toggle-file-panel      => { root.show-file-panel = !root.show-file-panel; }
+            toggle-tags            => { root.show-tags = !root.show-tags; }
+            context-menu-opened    => { right-panel.close-context-menu(); }
+        }
+
+        //
+        // RIGHT DRAG HANDLE
+        //
+        Rectangle {
+            x: root.cx + root.cw + (root.show-tags ? root.gap : 0px);
+            y: root.pad;
+            width: root.show-tags ? root.hnd : 0px;
+            height: root.ph;
+            visible: root.show-tags;
+            background: rh-ta.has-hover || rh-ta.pressed ? #7aa2f7 : #2f334d;
+            border-radius: 3px;
+
+            rh-ta := TouchArea {
+                x: -4px;
+                width: parent.width + 8px;
+                height: parent.height;
+                mouse-cursor: col-resize;
+                pointer-event(e) => {
+                    if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                        root.rh-drag-abs = self.absolute-position.x + self.mouse-x;
+                        root.rh-drag-w   = root.tags-panel-w;
+                    }
+                }
+                moved => {
+                    if self.pressed {
+                        let cur   = self.absolute-position.x + self.mouse-x;
+                        // Dragging left widens tags panel
+                        let delta = root.rh-drag-abs - cur;
+                        // Keep center panel >= 200 px
+                        let max-rp = root.width - root.pad - root.left-total
+                                     - root.gap - root.hnd - root.gap
+                                     - 200px - root.pad;
+                        root.tags-panel-w = max(200px, min(max-rp, root.rh-drag-w + delta));
+                    }
+                }
+            }
+        }
+
+        //
+        // RIGHT: DICOM Tags panel
+        //
+        right-panel := RightPanel {
+            x: root.width - root.pad - (root.show-tags ? root.tags-panel-w : 0px);
+            y: root.pad;
+            width: root.show-tags ? root.tags-panel-w : 0px;
+            height: root.ph;
+            visible: root.show-tags;
+
+            filtered-tags: root.filtered-tags;
+            advanced-filter <=> root.advanced-filter;
+            search-text <=> root.tag-search-text;
+
+            search-changed(q, contextual)           => { root.search-changed(q, contextual); }
+            tag-copy-request(action, source_index)  => { root.tag-copy-request(action, source_index); }
+            toggle-sequence(source_index)           => { root.toggle-sequence(source_index); }
+            collapse-all                            => { root.collapse-all(); }
+            expand-all                              => { root.expand-all(); }
+            export-tags                             => { root.export-tags(); }
+            context-menu-opened                     => { left-panel.close-context-menu(); }
+        }
+    }
+
+    //  Loading overlay
+    if root.loading : Rectangle {
+        x: 0; y: 0;
+        width: root.width; height: root.height;
+        background: #1a1b26ee;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 20px;
+
+            Text {
+                text: "Scanning directory...";
+                font-size: 22px;
+                font-weight: 700;
+                color: #c0caf5;
+                horizontal-alignment: center;
+            }
+
+            Text {
+                text: root.loading-current + " / " + root.loading-total;
+                font-size: 16px;
+                color: #7aa2f7;
+                horizontal-alignment: center;
+            }
+
+            Rectangle {
+                width: 420px;
+                height: 10px;
+                background: #2f334d;
+                border-radius: 5px;
+
+                Rectangle {
+                    width: root.loading-total > 0
+                        ? parent.width * root.loading-current / root.loading-total
+                        : 0px;
+                    height: parent.height;
+                    background: #7aa2f7;
+                    border-radius: 5px;
+                }
+            }
+        }
+    }
+}

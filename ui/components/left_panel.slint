@@ -1,0 +1,334 @@
+import { ScrollView, Button } from "std-widgets.slint";
+import { FrameItem } from "../types.slint";
+
+export component LeftPanel inherits Rectangle {
+    in property <image> current-image;
+    in property <[FrameItem]> frames;
+    in property <int> frame-count: 0;
+    in-out property <int> current-frame-index: 0;
+
+    in property <string> current-file-name: "";
+    in property <string> current-sop-class: "";
+    in property <string> image-size-info: "";
+
+    // Layout state passed from parent
+    in property <bool> dir-mode: false;
+    in property <bool> show-file-panel: false;
+    in property <bool> show-tags: true;
+
+    callback frame-selected(int);
+    callback save-current-frame();
+    callback save-all-frames();
+    callback open-file-dialog();
+    callback open-folder-dialog();
+    callback toggle-file-panel();
+    callback toggle-tags();
+    callback context-menu-opened();
+
+    public function close-context-menu() { root.image-menu-visible = false; }
+
+    property <bool> image-menu-visible: false;
+    property <length> image-menu-x: 0;
+    property <length> image-menu-y: 0;
+
+    background: transparent;
+    clip: false;
+
+    VerticalLayout {
+        spacing: 6px;
+
+        //  Toolbar
+        HorizontalLayout {
+            height: 36px;
+            spacing: 8px;
+            alignment: center;
+
+            // Left button group: file list | open file | open folder
+            HorizontalLayout {
+                spacing: 3px;
+                alignment: center;
+
+                // File list toggle (☰) — list/menu symbol, distinct from folder icons
+                //   Always occupies space; dims when no directory loaded
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    opacity: root.dir-mode ? 1.0 : 0.25;
+                    background: (root.dir-mode && fp-ta.has-hover) || root.show-file-panel
+                        ? #2f3d5c
+                        : transparent;
+                    border-color: root.show-file-panel ? #7aa2f7 : transparent;
+                    border-width: 1px;
+                    border-radius: 6px;
+                    fp-ta := TouchArea {
+                        enabled: root.dir-mode;
+                        mouse-cursor: root.dir-mode ? pointer : default;
+                        clicked => { root.toggle-file-panel(); }
+                    }
+                    Text {
+                        // ☰  trigram = unambiguous "list" symbol
+                        text: "☰";
+                        font-size: 17px;
+                        color: root.show-file-panel ? #7aa2f7 : #c0caf5;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+
+                // Open single file (📄)
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: of-ta.has-hover ? #2f334d : transparent;
+                    border-radius: 6px;
+                    of-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-file-dialog(); }
+                    }
+                    Text {
+                        text: "📄";
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+
+                // Open folder (📂)
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: odf-ta.has-hover ? #2f334d : transparent;
+                    border-radius: 6px;
+                    odf-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-folder-dialog(); }
+                    }
+                    Text {
+                        text: "📂";
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+            }
+
+            // Thin separator
+            Rectangle {
+                width: 1px;
+                height: 22px;
+                background: #2f334d;
+            }
+
+            // Filename — stretches to fill available space
+            Text {
+                text: root.current-file-name != "" ? root.current-file-name : "No file open";
+                font-size: 13px;
+                font-weight: 700;
+                color: root.current-file-name != "" ? #c0caf5 : #414868;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            // SOP class badge — only when set, stable width slot
+            Rectangle {
+                height: 26px;
+                width: root.current-sop-class != "" ? sop-lbl.preferred-width + 16px : 0px;
+                visible: root.current-sop-class != "";
+                background: #24283b;
+                border-radius: 5px;
+                border-color: #3d4466;
+                border-width: 1px;
+
+                sop-lbl := Text {
+                    x: 8px;
+                    y: (parent.height - self.preferred-height) / 2;
+                    text: root.current-sop-class;
+                    font-size: 11px;
+                    color: #7aa2f7;
+                }
+            }
+
+            // Thin separator
+            Rectangle {
+                width: 1px;
+                height: 22px;
+                background: #2f334d;
+            }
+
+            // Tags panel toggle (▶/◀)
+            Rectangle {
+                width: 32px;
+                height: 32px;
+                background: tg-ta.has-hover ? #2f334d : (root.show-tags ? #24283b : transparent);
+                border-radius: 6px;
+                border-color: root.show-tags ? #414868 : transparent;
+                border-width: 1px;
+                tg-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.toggle-tags(); }
+                }
+                Text {
+                    text: root.show-tags ? "▶" : "◀";
+                    font-size: 13px;
+                    color: root.show-tags ? #7aa2f7 : #565f89;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+            }
+        }
+        //  End Toolbar
+
+        image-rect := Rectangle {
+            background: #000000;
+            border-radius: 8px;
+            clip: true;
+
+            if root.current-image.width == 0 : Text {
+                text: "No image";
+                color: #565f89;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+
+            Image {
+                source: root.current-image;
+                image-fit: contain;
+                width: 100%;
+                height: 100%;
+            }
+
+            img-rclick := TouchArea {
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                        root.image-menu-x = image-rect.absolute-position.x - root.absolute-position.x + self.mouse-x;
+                        root.image-menu-y = image-rect.absolute-position.y - root.absolute-position.y + self.mouse-y;
+                        root.image-menu-visible = true;
+                        root.context-menu-opened();
+                    }
+                }
+            }
+
+            if root.image-size-info != "" : Rectangle {
+                x: parent.width - self.width - 8px;
+                y: parent.height - self.height - 8px;
+                width: sz-label.preferred-width + 12px;
+                height: sz-label.preferred-height + 6px;
+                background: #000000bb;
+                border-radius: 4px;
+
+                sz-label := Text {
+                    x: 6px;
+                    y: 3px;
+                    text: root.image-size-info;
+                    font-size: 12px;
+                    color: #c0caf5;
+                }
+            }
+        }
+
+        if root.frame-count > 1 : Rectangle {
+            height: 110px;
+            background: #24283b;
+            border-radius: 6px;
+            clip: true;
+
+            ScrollView {
+                width: parent.width;
+                height: parent.height;
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    padding: 8px;
+                    width: max(parent.width, root.frame-count * 92px + 10px);
+
+                    for frame[i] in root.frames : Rectangle {
+                        width: 86px;
+                        height: 90px;
+                        background: i == root.current-frame-index ? #7aa2f7 : #414868;
+                        border-radius: 5px;
+                        clip: true;
+
+                        Image {
+                            source: frame.thumbnail;
+                            image-fit: contain;
+                            x: 1px;
+                            y: 1px;
+                            width: parent.width - 2px;
+                            height: parent.height - 18px;
+                        }
+
+                        Text {
+                            text: frame.label;
+                            color: #ffffff;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            width: parent.width;
+                            y: parent.height - 18px;
+                        }
+
+                        TouchArea {
+                            clicked => {
+                                root.current-frame-index = i;
+                                root.frame-selected(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Click-outside dismiss for image context menu
+    if root.image-menu-visible : Rectangle {
+        x: 0; y: 0;
+        width: root.width; height: root.height;
+        background: transparent;
+        TouchArea {
+            clicked => { root.image-menu-visible = false; }
+        }
+    }
+
+    // Image right-click menu
+    if root.image-menu-visible : Rectangle {
+        x: root.image-menu-x;
+        y: root.image-menu-y;
+        width: 240px;
+        height: 84px;
+        background: #1f2335;
+        border-color: #414868;
+        border-width: 1px;
+        border-radius: 6px;
+
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+
+            Button {
+                text: "Save current frame";
+                clicked => {
+                    root.image-menu-visible = false;
+                    root.save-current-frame();
+                }
+            }
+
+            Button {
+                text: "Save all frames";
+                clicked => {
+                    root.image-menu-visible = false;
+                    root.save-all-frames();
+                }
+            }
+        }
+    }
+}
