@@ -12,7 +12,8 @@ use dicom_dictionary_std::{
 };
 use image::DynamicImage;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
-pub use types::{ContentKind, DirFileEntry, FileData, TagEntry};
+pub use types::{ContentKind, DirFileEntry, FileData, LazyPixelDecoder, TagEntry};
+
 
 use crate::error::AppError;
 
@@ -29,18 +30,33 @@ fn format_bytes(n: u64) -> String {
     if n >= 1_048_576 {
         format!("{:.1} MB", n as f64 / 1_048_576.0)
     } else {
-        format!("{:.0} KB", n as f64 / 1024.0)
+        format!("{:.1} KB", n as f64 / 1024.0)
     }
 }
 
 fn is_supported_file(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
-            .as_deref(),
-        Some("dcm")
-    )
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    match ext.as_deref() {
+        Some("dcm") => true,
+        // No extension — could be a DICOM file (common in PACS exports).
+        // Check for the DICOM preamble magic bytes "DICM" at offset 128.
+        None => has_dicom_preamble(path),
+        _ => false,
+    }
+}
+
+/// Quick check: does the file start with the standard 128-byte preamble + "DICM"?
+fn has_dicom_preamble(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut buf = [0u8; 132];
+    if f.read_exact(&mut buf).is_err() {
+        return false;
+    }
+    &buf[128..132] == b"DICM"
 }
 
 /// Recursively collect all .dcm paths under `dir`, sorted.
@@ -129,8 +145,16 @@ pub fn dynamic_image_to_slint(img: &DynamicImage) -> Image {
     Image::from_rgba8(buffer)
 }
 
+/// Convert a DynamicImage to a small Slint thumbnail (max 80px tall).
+pub fn dynamic_image_to_thumbnail(img: &DynamicImage) -> Image {
+    let thumb = img.thumbnail(80, 80);
+    let rgba = thumb.to_rgba8();
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(rgba.as_raw(), rgba.width(), rgba.height());
+    Image::from_rgba8(buffer)
+}
+
 pub fn load(path: &Path) -> Result<FileData, AppError> {
     let file_size = std::fs::metadata(path).map_or(0, |m| m.len());
     let size_str = format_bytes(file_size);
-    dicom::load_dicom(path, &size_str)
+    dicom::load_dicom(path, file_size, &size_str)
 }

@@ -1,19 +1,24 @@
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::HashSet,
     path::Path,
     rc::Rc,
     sync::{Arc, Mutex},
 };
 
-use image::DynamicImage;
+use image::{DynamicImage, ImageBuffer, Rgba};
 use log::error;
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::{
     ContentKind, FileItem, FrameItem, MainWindow, TagItem,
-    loader::{self, collect_file_paths, dynamic_image_to_slint, load, scan_single_file},
+    loader::{self, LazyPixelDecoder, collect_file_paths, dynamic_image_to_slint, dynamic_image_to_thumbnail, load, scan_single_file},
 };
+
+/// Small dark-gray placeholder rendered for lazy frames before decoding.
+fn placeholder_image() -> DynamicImage {
+    DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 80, Rgba([35u8, 37, 50, 255])))
+}
 
 pub fn load_and_apply(
     path: &Path,
@@ -21,38 +26,64 @@ pub fn load_and_apply(
     all_tags_store: &Rc<RefCell<Vec<TagItem>>>,
     all_entries_store: &Rc<RefCell<Vec<loader::TagEntry>>>,
     all_frames_store: &Rc<RefCell<Vec<DynamicImage>>>,
+    lazy_store: &Rc<RefCell<Option<LazyPixelDecoder>>>,
     collapsed: &Rc<RefCell<HashSet<i32>>>,
 ) {
     let data = load(path).unwrap_or_else(|e| {
         error!("Error loading file: {e}");
         loader::FileData {
             frames: vec![],
+            lazy_decoder: None,
             tags: vec![],
             sop_class: String::new(),
             image_info: String::new(),
         }
     });
 
+    // Store lazy decoder (or clear if not applicable).
+    *lazy_store.borrow_mut() = data.lazy_decoder;
+
     {
         let mut store = all_frames_store.borrow_mut();
         *store = data.frames;
     }
-    let slint_frames: Vec<FrameItem> = {
+
+    // Build Slint frame list.
+    // For lazy mode: generate placeholder thumbnails; for preloaded: use real images.
+    let is_lazy = lazy_store.borrow().is_some();
+    let slint_frames: Vec<FrameItem> = if is_lazy {
+        let frame_count = lazy_store.borrow().as_ref().map_or(0, |d| d.frame_count);
+        let ph = placeholder_image();
+        let ph_slint = dynamic_image_to_slint(&ph);
+        (0..frame_count)
+            .map(|i| FrameItem {
+                thumbnail: ph_slint.clone(),
+                label: format!("{}", i + 1).into(),
+            })
+            .collect()
+    } else {
         let frames = all_frames_store.borrow();
         frames
             .iter()
             .enumerate()
             .map(|(i, img)| FrameItem {
-                thumbnail: dynamic_image_to_slint(img),
+                thumbnail: dynamic_image_to_thumbnail(img),
                 label: format!("{}", i + 1).into(),
             })
             .collect()
     };
 
-    if let Some(first) = slint_frames.first() {
-        window.set_current_image(first.thumbnail.clone());
-    } else {
+    // For lazy mode: no image until user selects a frame.
+    // For preloaded: show first frame immediately.
+    if is_lazy {
         window.set_current_image(Default::default());
+    } else {
+        let frames = all_frames_store.borrow();
+        if let Some(first) = frames.first() {
+            window.set_current_image(dynamic_image_to_slint(first));
+        } else {
+            window.set_current_image(Default::default());
+        }
     }
     window.set_current_frame_index(0);
     window.set_frame_count(slint_frames.len() as i32);
@@ -163,15 +194,16 @@ pub fn apply_directory_async(
     all_tags_store: Rc<RefCell<Vec<TagItem>>>,
     all_entries_store: Rc<RefCell<Vec<loader::TagEntry>>>,
     all_frames_store: Rc<RefCell<Vec<DynamicImage>>>,
+    lazy_store: Rc<RefCell<Option<LazyPixelDecoder>>>,
     collapsed: Rc<RefCell<HashSet<i32>>>,
     only_visible: bool,
-) -> Timer {
+) -> Rc<Timer> {
     let paths = collect_file_paths(dir);
     let total = paths.len();
 
     if total == 0 {
         error!("No DICOM/PDF files found in: {}", dir.display());
-        return Timer::default();
+        return Rc::new(Timer::default());
     }
 
     window.set_dir_mode(true);
@@ -193,20 +225,15 @@ pub fn apply_directory_async(
 
     let rx = Arc::new(Mutex::new(rx));
     let results: Rc<RefCell<Vec<loader::DirFileEntry>>> = Rc::new(RefCell::new(Vec::new()));
-    let received = Rc::new(Cell::new(0usize));
-    let done = Rc::new(Cell::new(false));
+    let received = Rc::new(std::cell::Cell::new(0usize));
 
     let window_weak = window.as_weak();
     let results_cb = results;
     let received_cb = received;
-    let done_cb = done;
 
-    let timer = Timer::default();
+    let timer = Rc::new(Timer::default());
+    let timer_ref = timer.clone();
     timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
-        if done_cb.get() {
-            return;
-        }
-
         // Drain whatever the background thread has produced so far.
         {
             let lock = rx.lock().unwrap();
@@ -224,8 +251,8 @@ pub fn apply_directory_async(
             return;
         }
 
-        // --- All files scanned ---
-        done_cb.set(true);
+        // --- All files scanned — stop the timer.
+        timer_ref.stop();
 
         let mut entries = results_cb.borrow().clone();
         // Default: sort by SOP class, then path.
@@ -244,6 +271,7 @@ pub fn apply_directory_async(
                 &all_tags_store,
                 &all_entries_store,
                 &all_frames_store,
+                &lazy_store,
                 &collapsed,
             );
         }

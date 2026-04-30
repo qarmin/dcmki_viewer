@@ -25,20 +25,23 @@ pub fn apply_collapse(tags: &[TagItem], collapsed: &HashSet<i32>) -> Vec<TagItem
     result
 }
 
-pub fn rebuild_filtered(all: &[TagItem], query: &str, advanced: bool, collapsed: &HashSet<i32>) -> Vec<TagItem> {
+/// `mode`: 0 = Simple, 1 = Contextual (ancestors only), 2 = Full Contextual (ancestors + children)
+pub fn rebuild_filtered(all: &[TagItem], query: &str, mode: i32, collapsed: &HashSet<i32>) -> Vec<TagItem> {
     let searched: Vec<TagItem> = if query.is_empty() {
         all.to_vec()
-    } else if advanced {
-        filter_advanced(all, query)
     } else {
-        all.iter()
-            .filter(|t| {
-                t.tag.to_lowercase().contains(query)
-                    || t.name.to_lowercase().contains(query)
-                    || t.value.to_lowercase().contains(query)
-            })
-            .cloned()
-            .collect()
+        match mode {
+            1 => filter_advanced(all, query),
+            2 => filter_full_contextual(all, query),
+            _ => all.iter()
+                .filter(|t| {
+                    t.tag.to_lowercase().contains(query)
+                        || t.name.to_lowercase().contains(query)
+                        || t.value.to_lowercase().contains(query)
+                })
+                .cloned()
+                .collect(),
+        }
     };
     if query.is_empty() {
         apply_collapse(&searched, collapsed)
@@ -87,6 +90,65 @@ pub fn filter_advanced(all: &[TagItem], q: &str) -> Vec<TagItem> {
         if !included[idx] {
             included[idx] = true;
             result.push(all[idx].clone());
+        }
+    }
+    result
+}
+
+/// Returns ancestors + matching tags + all descendants of matching sequences.
+pub fn filter_full_contextual(all: &[TagItem], q: &str) -> Vec<TagItem> {
+    let mut result: Vec<TagItem> = Vec::new();
+    let mut included = vec![false; all.len()];
+
+    let matched: Vec<usize> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            t.tag.to_lowercase().contains(q)
+                || t.name.to_lowercase().contains(q)
+                || t.value.to_lowercase().contains(q)
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    for idx in matched {
+        // Ancestors
+        let target_depth = all[idx].depth;
+        let mut ancestors: Vec<usize> = Vec::new();
+        if target_depth > 0 {
+            let mut needed_depth = target_depth - 1;
+            let mut j = idx as i64 - 1;
+            while j >= 0 {
+                let t = &all[j as usize];
+                if (t.is_item_header || t.is_sequence) && t.depth == needed_depth {
+                    ancestors.push(j as usize);
+                    if needed_depth == 0 { break; }
+                    needed_depth -= 1;
+                }
+                j -= 1;
+            }
+        }
+        ancestors.reverse();
+        for a in ancestors {
+            if !included[a] {
+                included[a] = true;
+                result.push(all[a].clone());
+            }
+        }
+        // Match itself
+        if !included[idx] {
+            included[idx] = true;
+            result.push(all[idx].clone());
+        }
+        // All children (items at deeper depth following the match)
+        let base_depth = all[idx].depth;
+        let mut i = idx + 1;
+        while i < all.len() && all[i].depth > base_depth {
+            if !included[i] {
+                included[i] = true;
+                result.push(all[i].clone());
+            }
+            i += 1;
         }
     }
     result

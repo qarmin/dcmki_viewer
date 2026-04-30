@@ -7,13 +7,23 @@ runr file:
 build:
     cargo build --profile rdebug
 
+# Execute as
+# just heaptrack .; heaptrack_gui "$(ls -t heaptrack.* 2>/dev/null | head -n1)"
 heaptrack file:
     cargo build --profile rdebug
     RUST_LOG=debug heaptrack target/rdebug/dcmki_viewer {{file}}
 
+# Execute as
+# just hotspot .;hotspot perf.data
 hotspot file:
     cargo build --profile rdebug
     RUST_LOG=debug perf record -o perf.data --call-graph dwarf,8192 --aio -z --sample-cpu target/rdebug/dcmki_viewer {{file}}
+
+# Execute as
+# just samply .
+samply file:
+    cargo build --profile rdebug
+    samply record target/rdebug/dcmki_viewer {{file}}
 
 install:
     cargo install --path . --locked
@@ -23,6 +33,11 @@ fix:
     cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
     cargo +nightly fmt
     cargo fmt
+
+# Remove box-drawing / decorative Unicode chars from source files (e.g. ─ ━ │ ┃ ┌ ┐ └ ┘ etc.)
+strip-box-chars:
+    find src -name "*.rs" | xargs -I{} sed -i \
+        's/[─━│┃┌┐└┘├┤┬┴┼╭╮╯╰╔╗╚╝╠╣╦╩╬═║·]//g' {}
 
 binaries:
     rm binaries -r || true

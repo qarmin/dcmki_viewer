@@ -24,7 +24,7 @@ export component MainWindow inherits Window {
     in property <string> dir-path: "";
     in property <[FileItem]> dir-files;
 
-    in-out property <bool> advanced-filter: false;
+    in-out property <int> filter-mode: 0;
     in-out property <bool> only-visible: true;
 
     in property <bool> loading: false;
@@ -36,7 +36,7 @@ export component MainWindow inherits Window {
 
     //  Callbacks
     callback frame-selected(int);
-    callback search-changed(string, bool);
+    callback search-changed(string, int);
     callback file-selected(string);
     callback open-file-dialog();
     callback open-folder-dialog();
@@ -382,10 +382,10 @@ export component MainWindow inherits Window {
             visible: root.show-tags;
 
             filtered-tags: root.filtered-tags;
-            advanced-filter <=> root.advanced-filter;
+            filter-mode <=> root.filter-mode;
             search-text <=> root.tag-search-text;
 
-            search-changed(q, contextual)           => { root.search-changed(q, contextual); }
+            search-changed(q, mode) => { root.search-changed(q, mode); }
             tag-copy-request(action, source_index)  => { root.tag-copy-request(action, source_index); }
             toggle-sequence(source_index)           => { root.toggle-sequence(source_index); }
             collapse-all                            => { root.collapse-all(); }

@@ -4,7 +4,7 @@ use dicom::{
     core::{
         VR,
         dictionary::{DataDictionary, UidDictionary},
-        value::Value,
+        value::{PrimitiveValue, Value},
     },
     object::{InMemDicomObject, open_file},
 };
@@ -17,7 +17,7 @@ use dicom_dictionary_std::uids::{
 };
 use dicom_dictionary_std::{
     StandardDataDictionary, StandardSopClassDictionary,
-    tags::{ENCAPSULATED_DOCUMENT, SOP_CLASS_UID},
+    tags::{BITS_ALLOCATED, COLUMNS, ENCAPSULATED_DOCUMENT, NUMBER_OF_FRAMES, ROWS, SAMPLES_PER_PIXEL, SOP_CLASS_UID},
 };
 use dicom_pixeldata::PixelDecoder;
 use hayro::hayro_syntax::Pdf;
@@ -26,9 +26,12 @@ use log::error;
 
 use super::{
     pdf::render_pages,
-    types::{FileData, TagEntry},
+    types::{FileData, LazyPixelDecoder, TagEntry},
 };
 use crate::{error::AppError, visual_field};
+
+/// Files larger than this are decoded lazily (one frame at a time).
+const LAZY_THRESHOLD_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
 fn resolve_uid(uid: &str) -> String {
     let uid = uid.trim();
@@ -85,6 +88,53 @@ pub fn get_storage_sop_class_name(sop_class_uid: &str) -> String {
         .unwrap_or(format!("<unknown name {sop_class_uid}>"))
 }
 
+fn read_u32_tag(obj: &InMemDicomObject, tag: dicom::core::Tag) -> Option<u32> {
+    obj.get(tag)
+        .and_then(|e| e.value().to_str().ok().map(|s| s.trim().to_string()))
+        .and_then(|s| s.parse::<u32>().ok())
+}
+
+/// Build a human-readable summary for a Pixel Data element.
+fn pixel_data_summary(obj: &InMemDicomObject, value: &Value<InMemDicomObject>) -> String {
+    let rows = read_u32_tag(obj, ROWS).unwrap_or(0);
+    let cols = read_u32_tag(obj, COLUMNS).unwrap_or(0);
+    let frames = read_u32_tag(obj, NUMBER_OF_FRAMES).unwrap_or(1);
+    let bits = read_u32_tag(obj, BITS_ALLOCATED).unwrap_or(8);
+    let samples = read_u32_tag(obj, SAMPLES_PER_PIXEL).unwrap_or(1);
+
+    let dim_str = if rows > 0 && cols > 0 {
+        format!("{cols}×{rows}")
+    } else {
+        String::new()
+    };
+
+    match value {
+        Value::PixelSequence(ps) => {
+            let n = ps.fragments().len();
+            let total: usize = ps.fragments().iter().map(|f| f.len()).sum();
+            let size_str = super::format_bytes(total as u64);
+            let mut parts = vec![];
+            if !dim_str.is_empty() { parts.push(dim_str); }
+            if frames > 1 { parts.push(format!("{frames} frames")); }
+            parts.push(format!("{n} fragments"));
+            parts.push(format!("{size_str} compressed"));
+            format!("[Pixel Data: {}]", parts.join(", "))
+        }
+        Value::Primitive(_) => {
+            let uncompressed = (rows as u64) * (cols as u64) * (frames as u64)
+                * (bits as u64 / 8).max(1)
+                * (samples as u64);
+            let size_str = super::format_bytes(uncompressed);
+            let mut parts = vec![];
+            if !dim_str.is_empty() { parts.push(dim_str); }
+            if frames > 1 { parts.push(format!("{frames} frames")); }
+            parts.push(size_str);
+            format!("[Pixel Data: {}]", parts.join(", "))
+        }
+        _ => "[Pixel Data]".to_string(),
+    }
+}
+
 pub(super) fn flatten_obj(obj: &InMemDicomObject, dict: StandardDataDictionary, depth: u32, out: &mut Vec<TagEntry>) {
     for element in obj.iter() {
         let tag = element.header().tag;
@@ -126,13 +176,14 @@ pub(super) fn flatten_obj(obj: &InMemDicomObject, dict: StandardDataDictionary, 
                     flatten_obj(item, dict, depth + 2, out);
                 }
             }
-            Value::PixelSequence(_) => {
+            v @ Value::PixelSequence(_) => {
+                let summary = pixel_data_summary(obj, v);
                 out.push(TagEntry {
                     tag: tag_str,
                     name,
                     vr: vr_str,
-                    value: "[Pixel Data]".to_string(),
-                    value_full: "[Pixel Data]".to_string(),
+                    value: summary.clone(),
+                    value_full: summary,
                     is_private,
                     depth,
                     is_item_header: false,
@@ -140,53 +191,78 @@ pub(super) fn flatten_obj(obj: &InMemDicomObject, dict: StandardDataDictionary, 
                 });
             }
             Value::Primitive(_v) => {
-                // avoid clippy::map_unwrap_or by matching on the Result explicitly
-                let raw = match element.value().to_str() {
-                    Ok(s) => s.into_owned(),
-                    Err(_) => match element.value().to_bytes() {
-                        Ok(b) => format!("[binary: {} B]", b.len()),
-                        Err(_) => "[binary]".to_string(),
-                    },
-                };
-                let raw = raw.replace(['\r', '\n'], " ");
-                let (value, value_full) = if vr == VR::UI {
-                    let resolved = resolve_uid(raw.trim());
-                    (resolved.clone(), resolved)
+                // Check if this is unencapsulated pixel data (OB/OW with large size)
+                let is_pixel_data = (vr == VR::OB || vr == VR::OW || vr == VR::UN)
+                    && tag == dicom_dictionary_std::tags::PIXEL_DATA;
+
+                if is_pixel_data {
+                    let summary = pixel_data_summary(obj, element.value());
+                    out.push(TagEntry {
+                        tag: tag_str,
+                        name,
+                        vr: vr_str,
+                        value: summary.clone(),
+                        value_full: summary,
+                        is_private,
+                        depth,
+                        is_item_header: false,
+                        is_sequence: false,
+                    });
                 } else {
-                    (super::truncate(raw.clone(), 100), raw)
-                };
-                out.push(TagEntry {
-                    tag: tag_str,
-                    name,
-                    vr: vr_str,
-                    value,
-                    value_full,
-                    is_private,
-                    depth,
-                    is_item_header: false,
-                    is_sequence: false,
-                });
+                    let raw = match element.value().to_str() {
+                        Ok(s) => s.into_owned(),
+                        Err(_) => match element.value().to_bytes() {
+                            Ok(b) => format!("[binary: {} B]", b.len()),
+                            Err(_) => "[binary]".to_string(),
+                        },
+                    };
+                    let raw = raw.replace(['\r', '\n'], " ");
+                    let (value, value_full) = if vr == VR::UI {
+                        let resolved = resolve_uid(raw.trim());
+                        (resolved.clone(), resolved)
+                    } else {
+                        (super::truncate(raw.clone(), 100), raw)
+                    };
+                    out.push(TagEntry {
+                        tag: tag_str,
+                        name,
+                        vr: vr_str,
+                        value,
+                        value_full,
+                        is_private,
+                        depth,
+                        is_item_header: false,
+                        is_sequence: false,
+                    });
+                }
             }
         }
     }
 }
 
-pub(super) fn load_dicom(path: &Path, size_str: &str) -> Result<FileData, AppError> {
-    let obj = open_file(path).map_err(|e| AppError::Dicom(e.to_string()))?;
+pub(super) fn load_dicom(path: &Path, file_size: u64, size_str: &str) -> Result<FileData, AppError> {
+    let mut obj = open_file(path).map_err(|e| AppError::Dicom(e.to_string()))?;
 
     let dict = StandardDataDictionary;
     let mut tags: Vec<TagEntry> = Vec::new();
     flatten_obj(&obj, dict, 0, &mut tags);
 
-    let sop_class = obj
+    let sop_uid = obj
         .get(SOP_CLASS_UID)
         .and_then(|el| el.value().to_str().ok().map(|s| s.into_owned()))
-        .map_or_else(|| "DICOM".to_string(), |uid| get_storage_sop_class_name(uid.trim()));
+        .unwrap_or_default();
 
-    let enc_pdf = obj
-        .get(ENCAPSULATED_DOCUMENT)
-        .and_then(|el| el.value().to_bytes().ok())
-        .map(|b| b.into_owned())
+    let sop_class = if sop_uid.is_empty() {
+        "DICOM".to_string()
+    } else {
+        get_storage_sop_class_name(sop_uid.trim())
+    };
+
+    let enc_pdf = obj.take(ENCAPSULATED_DOCUMENT)
+        .and_then(|el| match el.into_value() {
+            Value::Primitive(PrimitiveValue::U8(v)) => Some(v.into_vec()),
+            _ => None,
+        })
         .filter(|b| b.starts_with(b"%PDF"))
         .and_then(|bytes| {
             Pdf::new(bytes)
@@ -195,53 +271,79 @@ pub(super) fn load_dicom(path: &Path, size_str: &str) -> Result<FileData, AppErr
         });
 
     const VF_SOP: &str = OPHTHALMIC_VISUAL_FIELD_STATIC_PERIMETRY_MEASUREMENTS_STORAGE;
-    let sop_uid = obj
-        .get(SOP_CLASS_UID)
-        .and_then(|el| el.value().to_str().ok().map(|s| s.into_owned()))
-        .unwrap_or_default();
 
-    let frames = if let Some(pdf) = enc_pdf {
-        render_pages(&pdf)
-    } else if sop_uid.trim() == VF_SOP {
-        visual_field::render(&obj)
-    } else {
-        match obj.decode_pixel_data() {
-            Ok(pd) => (0..pd.number_of_frames())
-                .filter_map(|i| {
-                    pd.to_dynamic_image(i)
-                        .map_err(|e| error!("Warning: frame {i}: {e}"))
-                        .ok()
-                })
-                .collect(),
-            Err(e) => {
-                let msg = e.to_string();
-                if !msg.to_lowercase().contains("missing") {
-                    error!("Note: no displayable content ({e})");
-                }
-                vec![]
+    if let Some(pdf) = enc_pdf {
+        // PDF: pre-decode all pages (small)
+        let frames = render_pages(&pdf);
+        return Ok(FileData {
+            frames,
+            lazy_decoder: None,
+            tags,
+            sop_class,
+            image_info: String::new(),
+        });
+    }
+
+    if sop_uid.trim() == VF_SOP {
+        // Visual field: pre-rendered SVG diagram (small)
+        let frames = visual_field::render(&obj);
+        return Ok(FileData {
+            frames,
+            lazy_decoder: None,
+            tags,
+            sop_class,
+            image_info: String::new(),
+        });
+    }
+
+    // Regular pixel DICOM
+    let frame_count = obj
+        .get(NUMBER_OF_FRAMES)
+        .and_then(|el| el.value().to_str().ok().map(|s| s.trim().to_string()))
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(1);
+
+    if file_size > LAZY_THRESHOLD_BYTES {
+        // Large file: lazy decoding — keep raw DICOM in memory, decode on demand.
+        let rows = read_u32_tag(&obj, ROWS).unwrap_or(0);
+        let cols = read_u32_tag(&obj, COLUMNS).unwrap_or(0);
+        let image_info = format!("{cols}×{rows}  {frame_count} frame(s)  {size_str}  [lazy]");
+        let lazy_decoder = LazyPixelDecoder { obj, frame_count };
+        return Ok(FileData {
+            frames: vec![],
+            lazy_decoder: Some(lazy_decoder),
+            tags,
+            sop_class,
+            image_info,
+        });
+    }
+
+    // Small file: decode all frames eagerly (current behaviour)
+    let frames = match obj.decode_pixel_data() {
+        Ok(pd) => (0..pd.number_of_frames())
+            .filter_map(|i| {
+                pd.to_dynamic_image(i)
+                    .map_err(|e| error!("Warning: frame {i}: {e}"))
+                    .ok()
+            })
+            .collect(),
+        Err(e) => {
+            let msg = e.to_string();
+            if !msg.to_lowercase().contains("missing") {
+                error!("Note: no displayable content ({e})");
             }
+            vec![]
         }
     };
 
-    let image_info = if sop_uid.trim() == VF_SOP {
-        String::new()
-    } else {
-        frames
-            .first()
-            .map(|img| {
-                format!(
-                    "{}×{}  {}  {}",
-                    img.width(),
-                    img.height(),
-                    image_color_str(img),
-                    size_str
-                )
-            })
-            .unwrap_or_default()
-    };
+    let image_info = frames
+        .first()
+        .map(|img| format!("{}×{}  {}  {}", img.width(), img.height(), image_color_str(img), size_str))
+        .unwrap_or_default();
 
     Ok(FileData {
         frames,
+        lazy_decoder: None,
         tags,
         sop_class,
         image_info,

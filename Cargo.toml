@@ -13,13 +13,16 @@ handsome_logger = "0.9.2"
 slint = { version = "1", default-features = false, features = ["std", "backend-winit", "compat-1-2", "renderer-winit-femtovg", "renderer-winit-software"] }
 dicom = { version = "0.9", default-features = false, features = ["inventory-registry", "ul"] }
 dicom-dictionary-std = { version = "0.9", default-features = false, features = ["sop-class", "transfer-syntax"] }
-dicom-pixeldata = { version = "0.9", default-features = false, features = ["image"] }
+dicom-pixeldata = { version = "0.9", default-features = false, features = ["image", "rle", "jpeg"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+resvg = "0.47"
 thiserror = "2.0.18"
 hayro = "0.6.0"
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 arboard = "3.4.1"
 log = "0.4.29"
+jpeg-encoder = "0.7"
+jpeg-decoder = { version = "0.3" }
 
 [build-dependencies]
 slint-build = "1"
