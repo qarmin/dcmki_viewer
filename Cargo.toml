@@ -11,16 +11,16 @@ path = "src/main.rs"
 [dependencies]
 handsome_logger = "0.9.2"
 slint = { version = "1", default-features = false, features = ["std", "backend-winit", "compat-1-2", "renderer-winit-femtovg", "renderer-winit-software"] }
-dicom = { version = "0.9", default-features = false, features = ["inventory-registry", "ul"] }
-dicom-dictionary-std = { version = "0.9", default-features = false, features = ["sop-class", "transfer-syntax"] }
-dicom-pixeldata = { version = "0.9", default-features = false, features = ["image", "rle", "jpeg"] }
+dicom = { version = "0.10", default-features = false, features = ["inventory-registry", "ul"] }
+dicom-dictionary-std = { version = "0.10", default-features = false, features = ["sop-class", "transfer-syntax"] }
+dicom-pixeldata = { version = "0.10", default-features = false, features = ["image", "rle", "jpeg"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-resvg = "0.47"
-thiserror = "2.0.18"
-hayro = "0.6.0"
+resvg = "0.48"
+thiserror = "2.0.20"
+hayro = "0.7.1"
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
-arboard = "3.4.1"
-log = "0.4.29"
+arboard = "3.6.1"
+log = "0.4.34"
 jpeg-encoder = "0.7"
 jpeg-decoder = { version = "0.3" }
 
@@ -34,6 +34,27 @@ strip = false
 debug-assertions = true
 incremental = true
 
+# maximum release (shipping). VERY slow to compile (fat LTO + codegen-units = 1).
+# WARNING: panic = "abort" means panics are NOT caught - they abort the whole process.
+# Do NOT use when the app processes external/untrusted input (parsers, decoders, etc.)
+[profile.fastest]
+inherits = "release"
+panic = "abort"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+opt-level = 3
+
+# fast iterative release (local dev, no LTO)
+[profile.fast_release]
+inherits = "release"
+incremental = true
+strip = true
+
+# compile all dependencies at O3 even in debug builds
+[profile.dev.package."*"]
+opt-level = 3
+
 
 [lints]
 clippy.unreachable = "allow" # This is a legitimate use case in most places
@@ -41,6 +62,8 @@ clippy.enum_variant_names = "allow" # Not always is possible to use different na
 clippy.too_many_arguments = "allow" # Sometimes such functions are needed
 clippy.type_complexity = "allow" # Sometimes such types are needed
 clippy.collapsible_else_if = "allow" # Sometimes it is more readable
+clippy.iter_on_single_items = "allow"
+clippy.needless_range_loop = "allow"
 clippy.unimplemented = "allow" # Used in tests
 clippy.error_impl_error = "allow" # Too much to fix
 clippy.get_first = "allow" # largly ridiculous e.g. (x.get(0), x.get(1)) demands (x.first(), x.get(1)) creating confusion
@@ -53,6 +76,10 @@ clippy.ip_constant = "warn"
 clippy.unnecessary_semicolon = "warn"
 clippy.trivially_copy_pass_by_ref = "warn"
 clippy.non_std_lazy_statics = "warn"
+clippy.undocumented_unsafe_blocks = "warn"
+clippy.manual_midpoint = "warn"
+clippy.ignore_without_reason = "warn"
+clippy.elidable_lifetime_names = "warn"
 
 clippy.allow_attributes = "warn"
 clippy.assertions_on_result_states = "warn"

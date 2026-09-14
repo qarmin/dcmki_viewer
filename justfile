@@ -1,3 +1,7 @@
+set export := true
+
+BIN_NAME := "dcmki_viewer"
+
 run file:
     cargo run -- {{file}}
 
@@ -25,6 +29,20 @@ samply file:
     cargo build --profile rdebug
     samply record target/rdebug/dcmki_viewer {{file}}
 
+runv *args:
+    cargo build --bin $BIN_NAME --profile rdebug
+    valgrind --leak-check=full --show-leak-kinds=definite --track-origins=yes target/rdebug/$BIN_NAME {{args}}
+
+runs *args:
+    export RUST_BACKTRACE=1
+    export ASAN_SYMBOLIZER_PATH=$(which llvm-symbolizer)
+    export ASAN_OPTIONS="symbolize=1:detect_leaks=0"
+    ASAN_OPTIONS="symbolize=1:detect_leaks=0" RUSTFLAGS="-Zsanitizer=address" cargo +nightly run --target x86_64-unknown-linux-gnu --bin $BIN_NAME {{args}}
+
+upgrade:
+    cargo upgrade -i
+    cargo update
+
 install:
     cargo install --path . --locked
 
@@ -34,10 +52,27 @@ fix:
     cargo +nightly fmt
     cargo fmt
 
+fixn:
+    cargo +nightly fmt
+    cargo +nightly clippy --fix --allow-dirty --allow-staged --all-features --all-targets
+    cargo +nightly fmt
+    cargo fmt
+
 # Remove box-drawing / decorative Unicode chars from source files (e.g. ─ ━ │ ┃ ┌ ┐ └ ┘ etc.)
 strip-box-chars:
     find src -name "*.rs" | xargs -I{} sed -i \
         's/[─━│┃┌┐└┘├┤┬┴┼╭╮╯╰╔╗╚╝╠╣╦╩╬═║·]//g' {}
+
+init:
+    cargo fetch
+
+sync:
+    cargo fetch
+
+setup_sanitizer:
+    rustup install nightly
+    rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+    rustup component add llvm-tools-preview --toolchain nightly-x86_64-unknown-linux-gnu
 
 binaries:
     rm binaries -r || true

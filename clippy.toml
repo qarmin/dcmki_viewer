@@ -1,6 +1,8 @@
 msrv = "1.89.0"
+allow-indexing-slicing-in-tests = true
 allow-unwrap-in-tests = true
 allow-print-in-tests = true
+avoid-breaking-exported-api = false
 
 disallowed-methods = [
     { path = "dicom::object::InMemDicomObject::element", reason = "Uses heavy backtrace capturing on error, use .get() instead" },
